@@ -201,26 +201,37 @@ function showUsers($client)
  */
 function defineUserMapping(array $config, $source, $dest)
 {
-    if (isset($config['user_map']) && is_array($config['user_map'])) {
-        return $config;
-    }
+    //if (isset($config['user_map']) && is_array($config['user_map'])) {
+    //    return $config;
+    //}
 
     //
     // Show Statuses
     //
     print "\nSource Users\n\n";
-    showUsers($source);
+    //showUsers($source);
 
     $users = $source->user->all();
     foreach ($users['users'] as $user) {
+        if(isset($config['user_map'][$user['id']])) {
+	  printf("Skip user %50s", $user['login']);
+	}
         print "Source User ID " . $user['id'] . ", name: " . $user['firstname'] . ' ' . $user['lastname'] . "\n";
         print "\nDestination Users\n\n";
         showUsers($dest);
         $config['user_map'][$user['id']] = readline('Enter the destination user ID for source user ' .
             $user['firstname'] . ' ' . $user['lastname'] . ': ');
+	if(empty($config['user_map'][$user['id']])) {
+	  createUser($user);
+	};
     }
 
     return $config;
+}
+
+function createUser($user)
+{
+
 }
 
 /**
@@ -264,6 +275,52 @@ function defineProjects(array $config, $source, $dest)
     showProjects($dest);
 
     $config['project_map'][$source_project_id] = readline('Select a destination project ID: ');
+    return $config;
+}
+
+/**
+ * Show custom fields
+ *
+ * @param Redmine\Client $client
+ */
+function showCustomFields($client)
+{
+    $fields = $client->custom_fields->all();
+    
+    print "+-------+----------------------------------------------------+\n";
+    printf("| %5s | %-50s |\n", 'id', 'Custom Field Name');
+    print "+-------+----------------------------------------------------+\n";
+    foreach ($fields['custom_fields'] as $field) {
+        printf("| %5d | %-50s |\n", $field['id'], $field['name']);
+    }
+    print "+-------+----------------------------------------------------+\n\n";
+}
+
+/**
+ * Define the custom field mapping from source fields to destination fields
+ *
+ * @param array $config
+ * @param Redmine\Client $source
+ * @param Redmine\Client $dest
+ * @return array
+ */
+function defineCustomFieldMapping(array $config, $source, $dest)
+{
+    if (isset($config['custom_field_map']) && is_array($config['custom_field_map'])) {
+        return $config;
+    }
+
+    print "\nSource Custom Fields\n\n";
+    showCustomFields($source);
+
+    $fields = $source->custom_fields->all();
+    foreach ($fields['custom_fields'] as $field) {
+        print "Source Custom Field ID " . $field['id'] . ", name: " . $field['name'] . "\n";
+        print "\nDestination Custom Fields\n\n";
+        showCustomFields($dest);
+        $config['custom_field_map'][$field['id']] = readline('Enter the destination field ID for source field ' . $field['name'] . ': ');
+    }
+
     return $config;
 }
 
@@ -316,6 +373,12 @@ $config = defineUserMapping($config, $source, $dest);
 file_put_contents($config_file, json_encode($config, JSON_PRETTY_PRINT));
 
 //
+// Have the custom field mappings been defined?
+//
+$config = defineCustomFieldMapping($config, $source, $dest);
+file_put_contents($config_file, json_encode($config, JSON_PRETTY_PRINT));
+
+//
 // Define project mapping
 //
 $config = defineProjects($config, $source, $dest);
@@ -332,6 +395,47 @@ foreach ($users['users'] as $user) {
     $userNameMap[$user['id']] = $user['login'];
 }
 
+//
+// Create the project
+// 
+$source_project = $source->project->show($source_project_id);
+
+$create_project_attributes = [
+  'name' => $source_project['project']['name'],
+  'identifier' => $source_project['project']['identifier'],
+  'description' => $source_project['project']['description'],
+  'homepage' => $source_project['project']['homepage'],
+  'status' => $source_project['project']['status'],
+  'is_public' => $source_project['project']['is_public']
+];
+
+$create_project_attributes['custom_fields'] = array();
+foreach($source_project['project']['custom_fields'] as $custom_field) {
+  $create_project_attributes['custom_fields'][] = [
+    'id' => $config['custom_field_map'][$custom_field['id']],
+    'value' => $custom_field['value']
+  ];
+}
+
+$create_project_attributes['trackers'] = array();
+foreach($source_project['project']['trackers'] as $tracker) {
+  $create_project_attributes['tracker_ids'][] = $config['tracker_map'][$tracker['id']];
+}
+
+$create_project_attributes['enabled_module_names'] = array();
+foreach($source_project['project']['enabled_modules'] as $enabled_module) {
+  $create_project_attributes['enabled_module_names'][] = $enabled_module['name'];
+}
+
+if(array_key_exists('parent_id', $source_project['project'])) {
+  $create_project_attributes['parent_id'] = $config['project_map'][$source_project['project']['id']];
+  $create_project_attributes['inherit_members'] = $source_project['project']['inherit_members'];
+}
+
+$postResult = $dest->project->create($create_project_attributes);
+$dest_project_id = $postResult->id;
+echo "New project $dest_project_id created.\n";
+
 /////////////////////////////////////////////////////////////////////////////////////
 //
 // Issues
@@ -343,13 +447,14 @@ foreach ($users['users'] as $user) {
 // FIXME: Only does 100 issues, does not page through the entire project.
 //
 $issues = $source->issue->all([
-    'limit'         => 100,
+    'limit'         => 1000,
     'sort'          => 'id',
     'project_id'    => $source_project_id,
 ]);
-# print_r($issues);
+//print_r($issues);
 
 foreach ($issues['issues'] as $issue) {
+    
     print "Processing issue ID " . $issue['id'] . ', ' . $issue['subject'] . ', Status: ' . $issue['status']['name'] . "\n";
 
     // Don't process the same issue twice.
@@ -443,6 +548,7 @@ $wikis = $wikis['wiki_pages'];
 // print_r($wikis);
 
 foreach ($wikis as $wiki) {
+
     print 'Processing wiki page ' . $wiki['title'] . "\n";
 
     // Don't process the same page twice.
@@ -450,7 +556,7 @@ foreach ($wikis as $wiki) {
         print "Already processed -- continuing.\n";
         continue;
     }
-
+    
     // To limit migration to one page only, uncomment this.
     // if ($wiki['title'] != 'Wiki') {
     //     continue;
@@ -498,3 +604,5 @@ foreach ($wikis as $wiki) {
         }
     }
 }
+
+//$dest->project->remove($dest_project_id);

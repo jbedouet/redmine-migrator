@@ -180,7 +180,7 @@ function definePriorityMapping(array $config, $source, $dest)
  */
 function showUsers($client)
 {
-    $users = $client->user->all();
+    $users = $client->user->all(['limit' => 100]);
 
     print "+-------+----------------------------------------------------+\n";
     printf("| %5s | %-50s |\n", 'id', 'User Name');
@@ -201,37 +201,64 @@ function showUsers($client)
  */
 function defineUserMapping(array $config, $source, $dest)
 {
-    //if (isset($config['user_map']) && is_array($config['user_map'])) {
-    //    return $config;
-    //}
 
-    //
-    // Show Statuses
-    //
-    print "\nSource Users\n\n";
-    //showUsers($source);
-
-    $users = $source->user->all();
+    if ( ! isset($config['user_map']) ) {
+        $config['user_map'] = array();
+    }
+    
+    $users = $source->user->all(['limit' => 100]);
     foreach ($users['users'] as $user) {
         if(isset($config['user_map'][$user['id']])) {
-	  printf("Skip user %50s", $user['login']);
+	    //printf("Skip user %s\n", $user['login']);
+	    continue;
 	}
-        print "Source User ID " . $user['id'] . ", name: " . $user['firstname'] . ' ' . $user['lastname'] . "\n";
-        print "\nDestination Users\n\n";
-        showUsers($dest);
         $config['user_map'][$user['id']] = readline('Enter the destination user ID for source user ' .
-            $user['firstname'] . ' ' . $user['lastname'] . ': ');
+            $user['firstname'] . ' ' . $user['lastname'] . ' suggests [' . suggestUser($dest, $user) . '] : ');
 	if(empty($config['user_map'][$user['id']])) {
-	  createUser($user);
+	  $newId = createUser($dest, $user);
+	  $config['user_map'][$user['id']] = $newId;
 	};
     }
 
     return $config;
 }
 
-function createUser($user)
+function suggestUser($dest, $user)
 {
+    $arr = $dest->user->all(['name' => $user['login']]);
+    
+    if( ! empty($arr['users']) ) {
+      return $arr['users'][0]['id'];
+    }
+    
+    $arr = $dest->user->all(['name' => $user['mail']]);
+    if (empty($arr['users'])) {
+        return '';
+    }
+    return $arr['users'][0]['id'];
+    
+}
 
+function createUser($dest, $user)
+{
+    
+    $create_user_attributes = [
+        'login' => $user['login'],
+        'firstname' => $user['firstname'],
+        'lastname' => $user['lastname'],
+        'mail' => $user['mail'],
+        'auth_source_id' => 1, // Id of your preferred authentication mode - To Be Changed for your case
+        //'mail_notification' => // Not in the API
+        'must_change_passwd' => 'false',
+        'generate_password' => 'false'
+    ];
+    
+    $postResult = $dest->user->create($create_user_attributes);
+    
+    printf("Create user %s with ID %5d\n", (string) $postResult->login, (integer) $postResult->id);
+
+    return (string) $postResult->id;
+    
 }
 
 /**
@@ -605,4 +632,4 @@ foreach ($wikis as $wiki) {
     }
 }
 
-//$dest->project->remove($dest_project_id);
+$dest->project->remove($dest_project_id);
